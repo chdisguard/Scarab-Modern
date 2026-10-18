@@ -35,6 +35,11 @@
             Maximum="100"
             Value="{Binding Progress}" />
 
+        <StackPanel DockPanel.Dock="Top" Margin="10 6" Spacing="4">
+            <TextBlock Text="{Binding ApiChannel}" FontSize="12" TextWrapping="Wrap" />
+            <TextBlock IsVisible="{Binding ApiBusy}" Text="Сборка / переключение API… Первая сборка может занять несколько минут." TextWrapping="Wrap" />
+            <ProgressBar IsVisible="{Binding ApiBusy}" IsIndeterminate="True" Height="4" />
+        </StackPanel>
         <Border DockPanel.Dock="Top"
                 Margin="10 10 10 5">
             <Grid

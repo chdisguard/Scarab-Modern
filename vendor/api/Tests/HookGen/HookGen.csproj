@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net472</TargetFramework>
+        <LangVersion>10</LangVersion>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="../../MonoMod.RuntimeDetour.HookGen/MonoMod.RuntimeDetour.HookGen.csproj" />
+    </ItemGroup>
+</Project>

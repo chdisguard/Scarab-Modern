@@ -31,7 +31,7 @@ public class ModDatabase : IModDatabase
                 name: mod.Name,
                 description: mod.Description,
                 repository: mod.Repository,
-                dependencies: mod.Dependencies,
+                dependencies: mod.Dependencies ?? Array.Empty<string>(),
                     
                 tags: tags,
                 integrations: mod.Integrations,
@@ -91,12 +91,12 @@ public class ModDatabase : IModDatabase
     {
         try
         {
-            var cts = new CancellationTokenSource(3000);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             return await hc.GetStringAsync(uri, cts.Token);
         }
         catch (Exception e) when (e is TaskCanceledException or HttpRequestException)
         {
-            var cts = new CancellationTokenSource(3000);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             return await hc.GetStringAsync(fallback, cts.Token);
         }
     }

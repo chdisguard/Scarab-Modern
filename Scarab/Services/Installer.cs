@@ -1,3 +1,4 @@
+using Scarab.Compatibility;
 using System.Diagnostics;
 using System.Diagnostics.Contracts;
 using System.IO.Abstractions;
@@ -25,6 +26,7 @@ public class HashMismatchException : Exception
     public string Name { get; }
         
     public HashMismatchException(string name, string actual, string expected)
+        : base($"Контрольная сумма {name} не совпадает. Файл не установлен. Обновите каталог и повторите загрузку. Ожидалась SHA-256: {expected}; получена: {actual}")
     {
         Name = name;
         Actual = actual;
@@ -80,6 +82,7 @@ public class Installer : IInstaller
             
         try
         {
+            GameProcess.EnsureClosed();
             await _Toggle(mod);
         }
         finally
@@ -90,12 +93,16 @@ public class Installer : IInstaller
 
     private async Task _Toggle(ModItem mod)
     {
+        ModPackage.ValidateName(mod.Name);
         if (mod.State is not InstalledState state)
             throw new InvalidOperationException("Cannot enable mod which is not installed!");
             
-        // Enable dependents when enabling a mod
-        if (!state.Enabled) 
+        // Validate the complete graph before any recursive enabling or directory moves.
+        if (!state.Enabled)
         {
+            var plan = DependencyPlanner.Order(mod, _db.Items);
+            var missing = plan.FirstOrDefault(m => m != mod && m.State is not InstalledState);
+            if (missing is not null) throw new InvalidDataException($"Зависимость «{missing.Name}» не установлена. Переустановите «{mod.Name}», чтобы загрузить зависимости.");
             foreach (ModItem dep in mod.Dependencies.Select(x => _db.Items.First(i => i.Name == x)))
             {
                 if (dep.State is InstalledState { Enabled: true } or NotInstalledState)
@@ -116,13 +123,32 @@ public class Installer : IInstaller
             Path.Combine(after, mod.Name)
         );
 
-        // If it's already in the other state due to user usage or an error, let it fix itself.
-        if (_fs.Directory.Exists(prev) && !_fs.Directory.Exists(after))
-            _fs.Directory.Move(prev, after);
-
-        mod.State = state with { Enabled = !state.Enabled };
-
-        await _installed.RecordInstalledState(mod);
+        if (_fs.Directory.Exists(after) && !_fs.Directory.Exists(prev))
+        {
+            try
+            {
+                mod.State = state with { Enabled = !state.Enabled };
+                await _installed.RecordInstalledState(mod);
+            }
+            catch { mod.State = state; throw; }
+            return;
+        }
+        if (_fs.Directory.Exists(after))
+            throw new InvalidDataException($"Целевая папка мода уже существует: {after}. Уберите дублирующую копию.");
+        if (!_fs.Directory.Exists(prev))
+            throw new DirectoryNotFoundException($"Не найдена папка мода: {prev}. Переустановите мод.");
+        _fs.Directory.Move(prev, after);
+        try
+        {
+            mod.State = state with { Enabled = !state.Enabled };
+            await _installed.RecordInstalledState(mod);
+        }
+        catch
+        {
+            mod.State = state;
+            _fs.Directory.Move(after, prev);
+            throw;
+        }
     }
 
     /// <remarks> This enables the API if it's installed! </remarks>
@@ -132,13 +158,17 @@ public class Installer : IInstaller
 
         try
         {
-            if (_installed.ApiInstall is InstalledState { Enabled: false })
+            GameProcess.EnsureClosed();
+            CheckWriteAccess();
+            // Verify before toggling a disabled API or writing any files.
+            string game = GameBuild.Read(_fs, _config.ManagedFolder);
+            if (game == LocalApiBuilder.Game)
             {
-                // Don't have the toggle update it for us, as that'll infinitely loop.
-                await _ToggleApi(Update.LeaveUnchanged);
+                await InstallUnity6Api(policy);
+                return;
             }
-
-            await _InstallApi(_db.Api, policy);
+            var compatible = await OfficialApiResolver.ResolveAsync(_hc, game, _db.Api, _config.PlatformLink);
+            await _InstallApi(compatible, policy);
         }
         finally
         {
@@ -151,14 +181,18 @@ public class Installer : IInstaller
         IInstaller.ReinstallPolicy policy = IInstaller.ReinstallPolicy.SkipUpToDate
     )
     {
-        bool was_vanilla = true;
+        string game = GameBuild.Read(_fs, _config.ManagedFolder);
+        ApiCompatibility.EnsureCompatible(game, _config.PlatformLink(manifest.Link).URL, manifest.Version);
+        bool was_vanilla = !GameAssembly.HasApi(_fs, Path.Combine(_config.ManagedFolder, Current));
+        if (!was_vanilla && !ApiReceipt.VanillaMatches(_fs, _config.ManagedFolder, game))
+            throw new InvalidDataException("Vanilla backup cannot be verified. Verify/repair the game in Steam or GOG, then reinstall API. Резервная DLL не подтверждена: восстановите файлы игры через Steam/GOG и переустановите API.");
 
-        if (_installed.ApiInstall is InstalledState { Version: var version } && policy is not IInstaller.ReinstallPolicy.ForceReinstall)
+        if (_installed.ApiInstall is InstalledState { Version: var version, Enabled: true } && policy is not IInstaller.ReinstallPolicy.ForceReinstall)
         {
-            if (version.Major >= manifest.Version)
+            if (version.Major == manifest.Version &&
+                ApiReceipt.Matches(_fs, _config.ManagedFolder, Current, game, manifest.Version))
                 return;
 
-            was_vanilla = false;
         }
             
         (var links, int ver) = manifest;
@@ -169,14 +203,20 @@ public class Installer : IInstaller
         (ArraySegment<byte> data, string _) = await DownloadFile(url.URL, _ => { });
             
         ThrowIfInvalidHash("the API", data, url.SHA256);
+        using (var archive = new ZipArchive(new MemoryStream(data.ToArray())))
+        {
+            var entry = archive.GetEntry(Current) ?? throw new InvalidDataException("API is missing Assembly-CSharp.dll.");
+            using var input = entry.Open();
+            using var bytes = new MemoryStream();
+            input.CopyTo(bytes);
+            if (!GameVersion.Same(GameAssembly.ReadVersion(bytes.ToArray()), game))
+                throw new InvalidDataException("API assembly targets a different game version.");
+        }
 
-        // Backup the vanilla assembly
-        if (was_vanilla)
-            _fs.File.Copy(Path.Combine(managed, Current), Path.Combine(managed, Vanilla), true);
-
-        ExtractZip(data, managed);
-
-        await _installed.RecordApiState(new InstalledState(true, new Version(ver, 0, 0), true));
+        GameProcess.EnsureClosed();
+        // A clean current assembly is authoritative after a Steam/GOG update; replace stale .v backups.
+        await ApiFileTransaction.InstallAsync(_fs, managed, data.ToArray(), was_vanilla, game, ver,
+            () => _installed.RecordApiState(new InstalledState(true, new Version(ver, 0, 0), true)));
     }
 
     public async Task ToggleApi()
@@ -224,31 +264,43 @@ public class Installer : IInstaller
         _config.Save();
     }
 
-    private async Task _ToggleApi(Update update = Update.ForceUpdate)
+    private async Task InstallUnity6Api(IInstaller.ReinstallPolicy policy)
     {
         string managed = _config.ManagedFolder;
+        GameProcess.EnsureClosed();
+        string game = GameBuild.Read(_fs, managed);
+        var receipt = ApiReceipt.Read(_fs, managed);
+        if (policy != IInstaller.ReinstallPolicy.ForceReinstall && receipt is not null &&
+            GameVersion.Same(receipt.Game, game) && receipt.Api == LocalApiBuilder.Api && LocalApiBuilder.IsKnownSource(receipt.Source))
+        {
+            if (receipt.CurrentMatches(_fs, managed, true))
+            {
+                await _installed.RecordApiState(new InstalledState(true, new Version(LocalApiBuilder.Api, 0, 0), true));
+                return;
+            }
+            if (receipt.CurrentMatches(_fs, managed, false))
+            {
+                await ApiFileTransaction.ToggleAsync(_fs, managed, game, true,
+                    () => _installed.RecordApiState(new InstalledState(true, new Version(LocalApiBuilder.Api, 0, 0), true)));
+                return;
+            }
+            throw new InvalidDataException("API files changed since installation. Verify game files before reinstalling.");
+        }
+        byte[] data = await LocalApiBuilder.BuildAsync(_config, _fs);
+        GameProcess.EnsureClosed();
+        bool pristine = !GameAssembly.HasApi(_fs, Path.Combine(managed, Current));
+        await ApiFileTransaction.InstallAsync(_fs, managed, data, pristine, game, LocalApiBuilder.Api,
+            () => _installed.RecordApiState(new InstalledState(true, new Version(LocalApiBuilder.Api, 0, 0), true)), LocalApiBuilder.Source);
+    }
 
-        Contract.Assert(_installed.ApiInstall is InstalledState);
-
-        var st = (InstalledState) _installed.ApiInstall;
-
-        var (move_to, move_from) = st.Enabled
-            // If the api is enabled, move the current (modded) dll
-            // to .m and then take from .v
-            ? (Modded, Vanilla)
-            // Otherwise, we're enabling the api, so move the current (vanilla) dll
-            // And take from our .m file
-            : (Vanilla, Modded);
-            
-        _fs.File.Move(Path.Combine(managed, Current), Path.Combine(managed, move_to), true);
-        _fs.File.Move(Path.Combine(managed, move_from), Path.Combine(managed, Current), true);
-
-        await _installed.RecordApiState(st with { Enabled = !st.Enabled });
-
-        // If we're out of date, and re-enabling the api - update it.
-        // Note we do this *after* we put the API in place.
-        if (update == Update.ForceUpdate && !st.Enabled && st.Version.Major < _db.Api.Version)
-            await _InstallApi(_db.Api);
+    private async Task _ToggleApi(Update update = Update.ForceUpdate)
+    {
+        GameProcess.EnsureClosed();
+        string managed = _config.ManagedFolder;
+        if (_installed.ApiInstall is not InstalledState st)
+            throw new InvalidOperationException("API is not installed.");
+        await ApiFileTransaction.ToggleAsync(_fs, managed, GameBuild.Read(_fs, managed), !st.Enabled,
+            () => _installed.RecordApiState(st with { Enabled = !st.Enabled }));
     }
 
     /// <summary>
@@ -260,12 +312,16 @@ public class Installer : IInstaller
     /// <exception cref="HashMismatchException">Thrown if the download doesn't match the given hash</exception>
     public async Task Install(ModItem mod, Action<ModProgressArgs> setProgress, bool enable)
     {
+        ModPackage.ValidateName(mod.Name);
+        var plan = DependencyPlanner.Order(mod, _db.Items);
+        foreach (var item in plan) ModPackage.ValidateName(item.Name);
         await InstallApi();
 
         await _semaphore.WaitAsync();
 
         try
         {
+            GameProcess.EnsureClosed();
             CreateNeededDirectories();
 
             void DownloadProgressed(DownloadProgressArgs args)
@@ -278,7 +334,16 @@ public class Installer : IInstaller
             // Start our progress
             setProgress(new ModProgressArgs());
 
-            await _Install(mod, DownloadProgressed, enable);
+            foreach (var item in plan)
+            {
+                if (item != mod && item.State is InstalledState { Updated: true } installed)
+                {
+                    if (!installed.Enabled && enable) await _Toggle(item);
+                    continue;
+                }
+                bool enabled = item == mod ? enable : enable || item.State is NotInstalledState || item.Enabled;
+                await _Install(item, item == mod ? DownloadProgressed : _ => { }, enabled);
+            }
                 
             setProgress(new ModProgressArgs {
                 Completed = true
@@ -296,6 +361,7 @@ public class Installer : IInstaller
 
         try
         {
+            GameProcess.EnsureClosed();
             // Shouldn't ever not exist, but rather safe than sorry I guess.
             CreateNeededDirectories();
 
@@ -309,77 +375,26 @@ public class Installer : IInstaller
 
     private async Task _Install(ModItem mod, Action<DownloadProgressArgs> setProgress, bool enable)
     {
-        foreach (ModItem dep in mod.Dependencies.Select(x => _db.Items.First(i => i.Name == x)))
-        {
-            if (dep.State is InstalledState { Updated: true, Enabled: var enabled })
-            {
-                if (!enabled && enable)
-                    await _Toggle(dep);
-                    
-                continue;
-            }
-
-            // Enable the dependencies' dependencies if we're enabling this mod
-            // Or if the dependency was previously not installed.
-            await _Install(dep, _ => { }, enable || dep.State is NotInstalledState);
-        }
-
         var link = _config.PlatformLink(mod.Link);
+        Log.Information("Downloading mod {Name} {Version}", mod.Name, mod.Version);
 
         var (data, filename) = await DownloadFile(link.URL, setProgress);
 
         ThrowIfInvalidHash(mod.Name, data, link.SHA256);
+        GameProcess.EnsureClosed();
 
-        // Sometimes our filename is quoted, remove those.
-        filename = filename.Trim('"');
-            
-        string ext = Path.GetExtension(filename.ToLower());
-
-        // Default to enabling
-        string base_folder = enable
-            ? _config.ModsFolder
-            : _config.DisabledFolder;
-
-        string mod_folder = Path.Combine(base_folder, mod.Name);
-
-        switch (ext)
+        var files = ModPackage.Read(data, filename);
+        Log.Information("Validated package for {Name}: {Count} files; staging installation", mod.Name, files.Count);
+        ModState previous = mod.State;
+        await ModFileTransaction.InstallAsync(_fs, _config.ManagedFolder, mod.Name, enable, files, async () =>
         {
-            case ".zip":
+            try
             {
-                ExtractZip(data, mod_folder);
-
-                break;
+                mod.State = new InstalledState(enable, mod.Version, true);
+                await _installed.RecordInstalledState(mod);
             }
-
-            case ".dll":
-            {
-                Directory.CreateDirectory(mod_folder);
-
-                Debug.Assert(data.Array != null, "data.Array != null");
-                await _fs.File.WriteAllBytesAsync(Path.Combine(mod_folder, filename), data.Array);
-
-                break;
-            }
-
-            default:
-            {
-                throw new NotImplementedException($"Unknown file type for mod download: {filename}");
-            }
-        }
-
-        mod.State = mod.State switch {
-            InstalledState => new InstalledState(
-                Version: mod.Version,
-                Updated:  true,
-                Enabled: enable
-            ),
-
-            NotInstalledState => new InstalledState(enable, mod.Version, true),
-
-            _ => throw new InvalidOperationException(mod.State.GetType().Name)
-        };
-
-        await _installed.RecordInstalledState(mod);
+            catch { mod.State = previous; throw; }
+        });
     }
 
     private static void ThrowIfInvalidHash(string name, ArraySegment<byte> data, string modSha256)
@@ -394,122 +409,43 @@ public class Installer : IInstaller
             throw new HashMismatchException(name, actual: strHash, expected: modSha256);
     }
 
-    private async Task<(ArraySegment<byte> data, string filename)> DownloadFile(string uri, Action<DownloadProgressArgs> setProgress)
+    private Task<(ArraySegment<byte> data, string filename)> DownloadFile(string uri, Action<DownloadProgressArgs> setProgress)
+        => DownloadService.FetchAsync(_hc, uri, setProgress);
+
+    private void CheckWriteAccess()
     {
-        (ArraySegment<byte> bytes, HttpResponseMessage response) = await _hc.DownloadBytesWithProgressAsync(
-            new Uri(uri), 
-            new Progress<DownloadProgressArgs>(setProgress)
-        );
-
-        string? filename = string.Empty;
-
-        if (response.Content.Headers.ContentDisposition is { } disposition)
-            filename = disposition.FileName;
-
-        if (string.IsNullOrEmpty(filename))
-            filename = uri[(uri.LastIndexOf("/", StringComparison.Ordinal) + 1)..];
-
-        return (bytes, filename);
-    }
-
-    private void ExtractZip(ArraySegment<byte> data, string root)
-    {
-        using var archive = new ZipArchive(data.AsMemory().AsStream());
-
-        string dest_dir_path = CreateDirectoryPath(root);
-
-        foreach (ZipArchiveEntry entry in archive.Entries)
-        {
-            string file_dest = Path.GetFullPath(Path.Combine(dest_dir_path, entry.FullName));
-
-            if (!file_dest.StartsWith(dest_dir_path))
-                throw new IOException("Extracts outside of directory!");
-
-            // If it's a directory:
-            if (Path.GetFileName(file_dest).Length == 0)
-            {
-                _fs.Directory.CreateDirectory(file_dest);
-            }
-            // File
-            else
-            {
-                // Create containing directory:
-                _fs.Directory.CreateDirectory(Path.GetDirectoryName(file_dest)!);
-
-                ExtractToFile(entry, file_dest);
-            }
-        }
-    }
-
-    private void ExtractToFile(ZipArchiveEntry src, string dest)
-    {
-        if (src == null)
-            throw new ArgumentNullException(nameof(src));
-
-        if (dest == null)
-            throw new ArgumentNullException(nameof(dest));
-
-        // Rely on FileStream's ctor for further checking dest parameter
-        const FileMode fMode = FileMode.Create;
-
-        using (Stream fs = _fs.FileStream.New(dest, fMode, FileAccess.Write, FileShare.None, 0x1000, false))
-        {
-            using (Stream es = src.Open())
-                es.CopyTo(fs);
-        }
-
-        _fs.File.SetLastWriteTime(dest, src.LastWriteTime.DateTime);
-    }
-
-
-    private string CreateDirectoryPath(string path)
-    {
-        // Note that this will give us a good DirectoryInfo even if destinationDirectoryName exists:
-        IDirectoryInfo di = _fs.Directory.CreateDirectory(path);
-
-        string dest_dir_path = di.FullName;
-
-        if (!dest_dir_path.EndsWith(Path.DirectorySeparatorChar))
-            dest_dir_path += Path.DirectorySeparatorChar;
-
-        return dest_dir_path;
-    }
-
-    private async Task _Uninstall(ModItem mod)
-    {
-        string dir = Path.Combine
-        (
-            mod.State is InstalledState { Enabled: true }
-                ? _config.ModsFolder
-                : _config.DisabledFolder,
-            mod.Name
-        );
-
+        string probe = Path.Combine(_config.ManagedFolder, ".scarab-write-check-" + Guid.NewGuid().ToString("N"));
         try
         {
-            _fs.Directory.Delete(dir, true);
+            _fs.File.WriteAllText(probe, "write-check");
+            _fs.File.Delete(probe);
         }
-        catch (DirectoryNotFoundException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            /* oh well, it's uninstalled anyways */
+            throw new IOException($"Нет доступа на запись в папку игры: {_config.ManagedFolder}. Проверьте права этой папки и не блокирует ли её антивирус. Файлы игры не изменены.", e);
         }
+    }
 
-        mod.State = new NotInstalledState();
-
-        await _installed.RecordUninstall(mod);
-
-        if (!_config.AutoRemoveDeps)
-            return;
-
-        foreach (ModItem dep in mod.Dependencies.Select(x => _db.Items.First(i => x == i.Name)))
+    private async Task _Uninstall(ModItem mod, HashSet<string>? visited = null)
+    {
+        visited ??= new HashSet<string>(StringComparer.Ordinal);
+        if (!visited.Add(mod.Name)) return;
+        ModState previous = mod.State;
+        await ModFileTransaction.UninstallAsync(_fs, _config.ManagedFolder, mod.Name, mod.Enabled, async () =>
         {
-            // Make sure no other mods depend on it
-            if (_db.Items.Where(x => x.State is InstalledState && x != mod).Any(x => x.Dependencies.Contains(dep.Name)))
-                continue;
-
-            await _Uninstall(dep);
-
-            dep.State = new NotInstalledState();
+            try
+            {
+                mod.State = new NotInstalledState();
+                await _installed.RecordUninstall(mod);
+            }
+            catch { mod.State = previous; throw; }
+        });
+        if (!_config.AutoRemoveDeps) return;
+        foreach (string name in mod.Dependencies)
+        {
+            var dep = _db.Items.FirstOrDefault(i => i.Name == name);
+            if (dep is null || _db.Items.Any(x => x.State is InstalledState && x != mod && x.Dependencies.Contains(name))) continue;
+            await _Uninstall(dep, visited);
         }
     }
 }

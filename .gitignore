@@ -348,3 +348,12 @@ ASALocalRun/
 
 # BeatPulse healthcheck temp database
 healthchecksdb
+
+# Local verification data and game files
+.DS_Store
+/logs/
+/MODLOG.md
+/MODDING_PLAN.md
+/vendor/api/Vanilla/
+/vendor/api/OutputFinal/
+**/Output/

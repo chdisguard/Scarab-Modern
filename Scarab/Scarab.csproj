@@ -5,7 +5,7 @@
         <TargetFramework>net8.0</TargetFramework>
         <LangVersion>11</LangVersion>
         <Nullable>enable</Nullable>
-        <Version>2.7.0.0</Version>
+        <Version>2.8.4.0</Version>
         <UseAppHost>true</UseAppHost>
         <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
@@ -27,7 +27,7 @@
         <AdditionalFiles Include="**\*.xaml" />
     </ItemGroup>
     
-    <PropertyGroup Condition="'$(Flatpak)' != 'True'">
+    <PropertyGroup Condition="'$(Flatpak)' == 'True'">
         <DefineConstants>FLATPAK</DefineConstants>
     </PropertyGroup>
     
@@ -95,5 +95,8 @@
     
     <ItemGroup>
       <Folder Include="Controls\" />
+    </ItemGroup>
+    <ItemGroup>
+        <EmbeddedResource Include="../vendor/Unity6Api-source.zip" LogicalName="Scarab.Unity6Api.zip" />
     </ItemGroup>
 </Project>

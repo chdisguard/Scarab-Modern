@@ -51,7 +51,8 @@ public partial class MainWindowViewModel : ViewModelBase, IActivatableViewModel
         Settings settings = Settings.Load() ?? Settings.Create(await GetSettingsPath());
         settings.Apply();
         
-        await CheckUpToDate(settings);
+        // Upstream self-update would replace this fork with unmodified Scarab.
+        // Updates for this fork are distributed with its own builds.
 
         if (!PathUtil.ValidateExisting(settings.ManagedFolder))
         {

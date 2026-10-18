@@ -86,6 +86,8 @@ internal class Program
             Debugger.Break();
 
         Log.Logger.Fatal(e, "Fatal error!");
+        try { Diagnostics.Capture(e, "Unhandled application exception"); }
+        catch { /* Preserve the original fatal exception if even the diagnostics directory is unavailable. */ }
     }
 
     // Avalonia configuration, don't remove; also used by visual designer.

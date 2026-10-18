@@ -21,6 +21,13 @@
             Settings
         </TextBlock>
 
+        <Border Margin="20 8" Padding="12" BorderThickness="1" BorderBrush="#667EAB" CornerRadius="6">
+            <StackPanel Spacing="6">
+                <TextBlock FontWeight="Bold" Text="Scarab Modern · Compatibility / Совместимость" />
+                <TextBlock Text="{Binding CompatibilityStatus}" TextWrapping="Wrap" />
+            </StackPanel>
+        </Border>
+        <Button Margin="20 4" Content="Диагностика / сохранить лог .txt" Command="{Binding ShowDiagnostics}" />
         <Grid ColumnDefinitions="Auto,Auto,*" RowDefinitions="*,*,*,*" Margin="20">
             <Grid.Styles>
                 <Style Selector=":is(Control)">

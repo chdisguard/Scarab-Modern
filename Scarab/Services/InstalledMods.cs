@@ -65,8 +65,30 @@ public record InstalledMods : IModSource
             changed = true;
         }
 
-        if (db.ApiInstall is not InstalledState) 
+        // Reconcile state from verified on-disk payloads after a crash or config loss.
+        var receipt = Compatibility.ApiReceipt.Read(fs, config.ManagedFolder);
+        if (receipt is not null)
+        {
+            try
+            {
+                string game = Compatibility.GameBuild.Read(fs, config.ManagedFolder);
+                if (Scarab.Compatibility.GameVersion.Same(receipt.Game, game))
+                {
+                    bool enabled = receipt.CurrentMatches(fs, config.ManagedFolder, true);
+                    bool disabled = !enabled && receipt.CurrentMatches(fs, config.ManagedFolder, false);
+                    db.ApiInstall = enabled || disabled
+                        ? new InstalledState(enabled, new Version(receipt.Api, 0, 0), true)
+                        : new NotInstalledState();
+                    changed = true;
+                }
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        }
+        if (db.ApiInstall is not InstalledState)
+        {
+            if (changed) await db.SaveToDiskAsync();
             return db;
+        }
 
         // Validate that mods are installed and in the right state in case of manual user intervention
         // We use ToList as we modify the db in the for-each
@@ -145,9 +167,14 @@ public record InstalledMods : IModSource
 
     public async Task RecordApiState(ModState st)
     {
+        ModState previous = ApiInstall;
         ApiInstall = st;
-            
-        await SaveToDiskAsync();
+        try { await SaveToDiskAsync(); }
+        catch
+        {
+            ApiInstall = previous;
+            throw;
+        }
     }
 
     public ModState FromManifest(Manifest manifest)
@@ -167,26 +194,43 @@ public record InstalledMods : IModSource
     {
         Contract.Assert(item.State is InstalledState);
 
-        Mods[item.Name] = (InstalledState) item.State;
-
-        await SaveToDiskAsync();
+        bool existed = Mods.TryGetValue(item.Name, out var previous);
+        Mods[item.Name] = (InstalledState)item.State;
+        try { await SaveToDiskAsync(); }
+        catch
+        {
+            if (existed) Mods[item.Name] = previous!;
+            else Mods.Remove(item.Name);
+            throw;
+        }
     }
 
     public async Task RecordUninstall(ModItem item)
     {
         Contract.Assert(item.State is NotInstalledState);
 
-        Mods.Remove(item.Name);
-
-        await SaveToDiskAsync();
+        bool existed = Mods.Remove(item.Name, out var previous);
+        try { await SaveToDiskAsync(); }
+        catch
+        {
+            if (existed) Mods[item.Name] = previous!;
+            throw;
+        }
     }
 
     private async Task SaveToDiskAsync()
     {
-        await using Stream fs = _fs.File.Exists(ConfigPath)
-            ? _fs.FileStream.New(ConfigPath, FileMode.Truncate)
-            : _fs.File.Create(ConfigPath);
-
-        await JsonSerializer.SerializeAsync(fs, this);
+        _fs.Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
+        string temporary = ConfigPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            await using (Stream stream = _fs.File.Create(temporary))
+                await JsonSerializer.SerializeAsync(stream, this);
+            _fs.File.Move(temporary, ConfigPath, true);
+        }
+        finally
+        {
+            if (_fs.File.Exists(temporary)) _fs.File.Delete(temporary);
+        }
     }
 }

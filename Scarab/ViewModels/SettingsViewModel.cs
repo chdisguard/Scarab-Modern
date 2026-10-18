@@ -8,6 +8,24 @@ namespace Scarab.ViewModels;
 public partial class SettingsViewModel : ViewModelBase
 {
     public ISettings Settings { get; }
+
+    public string CompatibilityStatus
+    {
+        get
+        {
+            try
+            {
+                string game = Compatibility.GameBuild.Read(new System.IO.Abstractions.FileSystem(), Settings.ManagedFolder);
+                if (game == Compatibility.LocalApiBuilder.Game)
+                    return $"Hollow Knight {game} · API v78 / Unity 6 (experimental).\nПервая установка собирает встроенный API из исходников под вашу игру. Нужен .NET SDK 8+, на Linux/macOS — также Mono; на macOS — lipo. Сборка не проверена в этой среде.";
+                return $"Hollow Knight {game} · API is checked for this exact build before installation.\nAPI проверяется на совместимость с этой версией перед установкой.";
+            }
+            catch (Exception e) when (e is System.IO.IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException)
+            {
+                return e.Message;
+            }
+        }
+    }
     
     private readonly IModSource _mods;
 
@@ -27,6 +45,7 @@ public partial class SettingsViewModel : ViewModelBase
     };
 
     public ReactiveCommand<Unit, Unit> ChangePath { get; }
+    public ReactiveCommand<Unit, Unit> ShowDiagnostics { get; }
 
     [Notify] 
     private ThemeVariant _theme;
@@ -42,6 +61,15 @@ public partial class SettingsViewModel : ViewModelBase
         Selected = settings.PreferredCulture;
 
         ChangePath = ReactiveCommand.CreateFromTask(ChangePathAsync);
+        ShowDiagnostics = ReactiveCommand.Create(() =>
+        {
+            var report = new DiagnosticReport(Diagnostics.Collect(Settings), null);
+            var window = new DiagnosticWindow(report);
+            var owner = (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow;
+            if (owner is null) window.Show(); else window.Show(owner);
+        });
+        ChangePath.ThrownExceptions.Subscribe(e => DiagnosticWindow.ShowError(e, "Выбор папки игры", Settings,
+            (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.MainWindow));
 
         _theme = settings.PreferredTheme == Models.Theme.Dark
             ? ThemeVariant.Dark
@@ -101,7 +129,7 @@ public partial class SettingsViewModel : ViewModelBase
         if (string.IsNullOrEmpty(path))
             return;
         
-        Settings.ManagedFolder = path;
+        Settings.ManagedFolder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
         Settings.Save();
 
         await _mods.Reset();

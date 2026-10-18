@@ -1,0 +1,22 @@
+{
+  "upstream": "https://github.com/hk-modding/api/pull/164",
+  "upstream_commit": "468f579f25e63da2188f39fe5ece15c25d2854d7",
+  "fixes": "https://github.com/SFGrenade/api/pull/5",
+  "fixes_commit": "f0057c4950a9078da7699f13b050351a28b7ba8d",
+  "local_revision": "unity6-f0057c4-modern-3",
+  "game": "1.5.12620",
+  "api": 78,
+  "embedded_source_sha256": "e02f036b6e6bd28a3aafc832f91231ec9df8c7c7c8ba7b79bd584862ccd87923",
+  "local_fixes": [
+    "restore previous audio pause on preload coroutine disposal",
+    "fallback for invalid native-library architecture/entrypoint",
+    "nonzero patcher exit status for invalid args",
+    "correct MSBuild cleanup paths",
+    "inlining regression fixture",
+    "exclude stale loader DLLs from Vanilla copy before patching"
+  ],
+  "built_here": true,
+  "runtime_tested_here": true,
+  "integration_revision": "unity6-f0057c4-modern-3",
+  "note": "Revision 3 prevents stale loader DLLs in Vanilla from overwriting pinned patcher dependencies. Built and loaded API v78 with DebugMod 1.4.10.2 on Windows Steam 1.5.12620, Unity 6000.0.61f1, 2026-10-18."
+}

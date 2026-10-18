@@ -21,6 +21,11 @@ public partial class ModPageView : ReactiveUserControl<ModPageViewModel>
         {
             vm.CompletedAction += OnComplete;
             vm.ExceptionRaised += OnError;
+            Disposable.Create(() =>
+            {
+                vm.CompletedAction -= OnComplete;
+                vm.ExceptionRaised -= OnError;
+            }).DisposeWith(d);
 
             this.WhenAnyValue(x => x.TagBox.SelectionBoxItem)
                 .Subscribe(x => vm.SelectedTag = (Tag) (x ?? Models.Tag.All))
@@ -30,50 +35,8 @@ public partial class ModPageView : ReactiveUserControl<ModPageViewModel>
 
     private void OnError(ModPageViewModel.ModAction act, Exception e, ModItem? m)
     {
-        Trace.TraceError($"Failed action {act} for {m?.Name ?? "null item"}, ex: {e}");
-
-        switch (e)
-        {
-            case HttpRequestException:
-            {
-                _notify?.Show(new Notification(
-                    $"Failed to {act} {m?.Name ?? string.Empty}!",
-                    string.Format(Localization.MLVM_DisplayNetworkError_Msgbox_Text, m?.Name ?? "the API"),
-                    NotificationType.Error
-                ));
-
-                break;
-            }
-
-            case HashMismatchException hashEx:
-            {
-                _notify?.Show(new Notification(
-                    $"Failed to {act} {m?.Name ?? string.Empty}!",
-                    string.Format(
-                        Localization.MLVM_DisplayHashMismatch_Msgbox_Text,
-                        hashEx.Name,
-                        hashEx.Actual,
-                        hashEx.Expected
-                    ),
-                    NotificationType.Error
-                ));
-
-                break;
-            }
-
-            default:
-            {
-                // TODO: on click event.
-                _notify?.Show(new Notification(
-                    // TODO: stringify lmao
-                    $"Failed to {act} {m?.Name ?? string.Empty}!",
-                    e.ToString(),
-                    NotificationType.Error
-                ));
-
-                break;
-            }
-        }
+        Dispatcher.UIThread.Post(() => DiagnosticWindow.ShowError(e, $"{act}: {m?.Name ?? "Modding API"}", ViewModel?.SettingsForDiagnostics,
+            TopLevel.GetTopLevel(this) as Window));
     }
 
     private void OnComplete(ModPageViewModel.ModAction act, ModItem mod)
@@ -106,7 +69,10 @@ public partial class ModPageView : ReactiveUserControl<ModPageViewModel>
 
     private void OnKeyDown(object? sender, KeyEventArgs e)
     {
-        if (!Search.IsFocused)
+        if (e.KeyModifiers == KeyModifiers.Control && e.Key == Key.F)
+        {
             Search.Focus();
+            e.Handled = true;
+        }
     }
 }

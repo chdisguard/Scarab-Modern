@@ -84,6 +84,26 @@ public partial class ModPageViewModel : ViewModelBase
 
     private readonly ILogger _logger;
 
+    public ISettings SettingsForDiagnostics => _settings;
+
+    public string ApiChannel
+    {
+        get
+        {
+            try
+            {
+                string game = Compatibility.GameBuild.Read(new System.IO.Abstractions.FileSystem(), _settings.ManagedFolder);
+                return game == Compatibility.LocalApiBuilder.Game
+                    ? $"Hollow Knight {game} · API v78 (Unity 6, experimental). First install builds locally; .NET SDK 8.0 required."
+                    : $"Hollow Knight {game} · official API channel";
+            }
+            catch (Exception e) when (e is System.IO.IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException) { return e.Message; }
+        }
+    }
+
+    [Notify]
+    private bool _apiBusy;
+
     public ModState Api      => _mods.ApiInstall;
     public bool ApiOutOfDate => _mods.ApiInstall is InstalledState { Version: var v } && v.Major < _db.Api.Version;
     public bool CanUpdateAll => _items.Any(x => x.State is InstalledState { Updated: false }) && !_updating;
@@ -120,11 +140,19 @@ public partial class ModPageViewModel : ViewModelBase
         UpdateApi = ReactiveCommand.CreateFromTask(UpdateApiAsync);
         ReinstallApi = ReactiveCommand.CreateFromTask(ReinstallApiAsync);
         UpdateAll = ReactiveCommand.CreateFromTask(UpdateAllAsync);
+        ToggleApi.ThrownExceptions.Subscribe(e => ExceptionRaised?.Invoke(ModAction.Toggle, e, null));
+        ReinstallApi.ThrownExceptions.Subscribe(e => ExceptionRaised?.Invoke(ModAction.Toggle, e, null));
 
         OnUpdate = ReactiveCommand.CreateFromTask<ModItem>(OnUpdateAsync);
         OnInstall = ReactiveCommand.CreateFromTask<ModItem>(OnInstallAsync);
         OnUninstall = ReactiveCommand.CreateFromTask<ModItem>(OnUninstallAsync);
         OnEnable = ReactiveCommand.CreateFromTask<ModItem>(OnEnableAsync);
+        UpdateAll.ThrownExceptions.Subscribe(e => ExceptionRaised?.Invoke(ModAction.Update, e, null));
+        UpdateApi.ThrownExceptions.Subscribe(e => ExceptionRaised?.Invoke(ModAction.Update, e, null));
+        OnInstall.ThrownExceptions.Subscribe(e => ExceptionRaised?.Invoke(ModAction.Install, e, null));
+        OnUpdate.ThrownExceptions.Subscribe(e => ExceptionRaised?.Invoke(ModAction.Update, e, null));
+        OnUninstall.ThrownExceptions.Subscribe(e => ExceptionRaised?.Invoke(ModAction.Uninstall, e, null));
+        OnEnable.ThrownExceptions.Subscribe(e => ExceptionRaised?.Invoke(ModAction.Toggle, e, null));
         
         this.WhenAnyValue(x => x.Search)
             .Subscribe(
@@ -139,19 +167,31 @@ public partial class ModPageViewModel : ViewModelBase
     {
         _logger.LogInformation("Reinstalling API, {State}", _mods.ApiInstall);
         
-        await _installer.InstallApi(IInstaller.ReinstallPolicy.ForceReinstall);
+        ApiBusy = true;
+        try { await Task.Run(() => _installer.InstallApi(IInstaller.ReinstallPolicy.ForceReinstall)); }
+        finally
+        {
+            ApiBusy = false;
+            RaisePropertyChanged(nameof(Api));
+            RaisePropertyChanged(nameof(ApiOutOfDate));
+        }
     }
 
     private async Task ToggleApiCommand()
     {
         _logger.LogInformation("Toggling API, current state: {State}", _mods.ApiInstall);
         
-        if (_mods.ApiInstall is not InstalledState)
-            await _installer.InstallApi();
-        else 
-            await _installer.ToggleApi();
-        
-        RaisePropertyChanged(nameof(Api));
+        ApiBusy = true;
+        try
+        {
+            if (_mods.ApiInstall is not InstalledState) await Task.Run(() => _installer.InstallApi());
+            else await Task.Run(() => _installer.ToggleApi());
+        }
+        finally
+        {
+            ApiBusy = false;
+            RaisePropertyChanged(nameof(Api));
+        }
     }
 
     public void OpenModsDirectory()
@@ -178,7 +218,8 @@ public partial class ModPageViewModel : ViewModelBase
         _logger.LogInformation("Updating all mods!");
         
         Updating = true;
-
+        try
+        {
         var outOfDate = _items.Where(x => x.State is InstalledState { Updated: false }).ToList();
 
         // ReSharper disable once ForeachCanBePartlyConvertedToQueryUsingAnotherGetEnumerator
@@ -191,7 +232,8 @@ public partial class ModPageViewModel : ViewModelBase
             await OnUpdateAsync(mod);
         }
 
-        Updating = false;
+        }
+        finally { Updating = false; }
     }
     
     [UsedImplicitly]
@@ -233,34 +275,6 @@ public partial class ModPageViewModel : ViewModelBase
     {
         _logger.LogInformation("Performing {Type} for {Mod}.", type, item);
         
-        static bool IsHollowKnight(Process p)
-        {
-            return p.ProcessName.StartsWith("hollow_knight")
-                   || p.ProcessName.StartsWith("Hollow Knight");
-        }
-
-        if (Process.GetProcesses().FirstOrDefault(IsHollowKnight) is { } proc)
-        {
-            var res = await MessageBoxManager.GetMessageBoxStandard(new MessageBoxStandardParams
-            {
-                ContentTitle = Resources.MLVM_InternalUpdateInstallAsync_Msgbox_W_Title,
-                ContentMessage = Resources.MLVM_InternalUpdateInstallAsync_Msgbox_W_Text,
-                ButtonDefinitions = ButtonEnum.YesNo,
-                MinHeight = 200,
-                SizeToContent = SizeToContent.WidthAndHeight
-            }).ShowAsync();
-
-            try
-            {
-                if (res == ButtonResult.Yes)
-                    proc.Kill();
-            }
-            catch (Win32Exception)
-            {
-                // tragic, but oh well.
-            }
-        }
-
         try
         {
             await Task.Run(async () => await f
@@ -299,6 +313,8 @@ public partial class ModPageViewModel : ViewModelBase
         }
 
         ProgressBarVisible = false;
+        RaisePropertyChanged(nameof(Api));
+        RaisePropertyChanged(nameof(ApiOutOfDate));
 
         static int Comparer(ModItem x, ModItem y)
         {

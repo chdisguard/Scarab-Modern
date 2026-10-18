@@ -1,84 +1,44 @@
 using System.Buffers;
-using System.Diagnostics;
 
 namespace Scarab.Util;
 
 public static class HttpClientExt
 {
-    public static async Task<(ArraySegment<byte>, HttpResponseMessage)> DownloadBytesWithProgressAsync
-    (
-        this HttpClient self,
-        Uri uri,
-        IProgress<DownloadProgressArgs> progress,
-        CancellationToken cts = default
-    )
+    public const int MaxDownloadBytes = 512 * 1024 * 1024;
+    public static async Task<(ArraySegment<byte>, HttpResponseMessage)> DownloadBytesWithProgressAsync(
+        this HttpClient self, Uri uri, IProgress<DownloadProgressArgs> progress, CancellationToken cts = default)
     {
-        HttpResponseMessage resp = await self.SendAsync
-        (
-            new HttpRequestMessage {
-                Version = self.DefaultRequestVersion,
-                Method = HttpMethod.Get,
-                RequestUri = uri
-            },
-            HttpCompletionOption.ResponseHeadersRead,
-            cts
-        ).ConfigureAwait(false);
-
-        Debug.Assert(resp is not null);
-
-        resp.EnsureSuccessStatusCode();
-
-        HttpContent content = resp.Content;
-
-        await using Stream stream = await content.ReadAsStreamAsync(cts).ConfigureAwait(false);
-
-        int dl_size = content.Headers.ContentLength is { } len
-            ? (int) len
-            : 65536;
-
-        byte[] pool_buffer = ArrayPool<byte>.Shared.Rent(65536);
-        
-        Memory<byte> buf = pool_buffer;
-
-        var memory = new MemoryStream(dl_size);
-
-        var args = new DownloadProgressArgs {
-            TotalBytes = (int?) content.Headers.ContentLength
-        };
-
-        progress.Report(args);
-
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri) { Version = self.DefaultRequestVersion };
+        var response = await self.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts).ConfigureAwait(false);
         try
         {
-            while (true)
+            response.EnsureSuccessStatusCode();
+            long? expected = response.Content.Headers.ContentLength;
+            if (expected is > MaxDownloadBytes or < 0) throw new InvalidDataException("Download exceeds the 512 MiB limit.");
+            await using var input = await response.Content.ReadAsStreamAsync(cts).ConfigureAwait(false);
+            using var output = new MemoryStream(expected is > 0 ? (int)Math.Min(expected.Value, 1024 * 1024) : 65536);
+            var args = new DownloadProgressArgs { TotalBytes = expected is null ? null : (int)expected.Value };
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(81920);
+            progress.Report(args);
+            try
             {
-                cts.ThrowIfCancellationRequested();
-
-                int read = await stream.ReadAsync(buf, cts).ConfigureAwait(false);
-                
-                await memory.WriteAsync(buf[..read], cts).ConfigureAwait(false);
-
-                if (read == 0)
-                    break;
-
-                args.BytesRead += read;
-
-                progress.Report(args);
+                int count;
+                while ((count = await input.ReadAsync(buffer.AsMemory(), cts).ConfigureAwait(false)) != 0)
+                {
+                    if (output.Length + count > MaxDownloadBytes) throw new InvalidDataException("Download exceeds the size limit.");
+                    await output.WriteAsync(buffer.AsMemory(0, count), cts).ConfigureAwait(false);
+                    args.BytesRead += count;
+                    progress.Report(args);
+                }
             }
+            finally { ArrayPool<byte>.Shared.Return(buffer); }
+            if (expected is not null && output.Length != expected.Value)
+                throw new IOException($"Incomplete download: received {output.Length} of {expected.Value} bytes.");
+            args.Completed = true;
+            progress.Report(args);
+            // Return precisely the downloaded bytes, never MemoryStream's spare capacity.
+            return (new ArraySegment<byte>(output.ToArray()), response);
         }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(pool_buffer);
-        }
-
-        args.Completed = true;
-
-        progress.Report(args);
-        
-        ArraySegment<byte> res_segment = memory.TryGetBuffer(out ArraySegment<byte> out_buffer)
-            ? out_buffer
-            : memory.ToArray();
-
-        return (res_segment, resp);
+        catch { response.Dispose(); throw; }
     }
 }

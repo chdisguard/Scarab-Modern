@@ -1,4 +1,4 @@
-﻿using System.Xml;
+using System.Xml;
 using System.Xml.Schema;
 using System.Xml.Serialization;
 
@@ -43,7 +43,7 @@ public record Manifest
 
     [XmlArray("Dependencies")]
     [XmlArrayItem("Dependency")]
-    public string[] Dependencies { get; set; } = null!;
+    public string[] Dependencies { get; set; } = Array.Empty<string>();
 
     public string Description { get; set; } = null!;
 

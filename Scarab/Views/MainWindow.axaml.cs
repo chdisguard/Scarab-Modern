@@ -5,6 +5,7 @@ public partial class MainWindow : ReactiveWindow<MainWindowViewModel>
     public MainWindow()
     {
         InitializeComponent();
+        Title = $"Scarab Modern {typeof(MainWindow).Assembly.GetName().Version?.ToString(3)} · Hollow Knight";
 
         this.WhenActivatedVM((vm, d) =>
         {

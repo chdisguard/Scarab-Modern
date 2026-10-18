@@ -103,6 +103,10 @@ public static class PathUtil
         if (!Directory.Exists(root))
             return new RootNotFoundError();
             
+        root = Path.GetFullPath(root);
+        if (File.Exists(Path.Combine(root, "Assembly-CSharp.dll")) &&
+            (File.Exists(Path.Combine(root, "UnityEngine.dll")) || File.Exists(Path.Combine(root, "UnityEngine.CoreModule.dll"))))
+            return new ValidPath(root, "");
         string? suffix = SUFFIXES.FirstOrDefault(s =>
         {
             string p = Path.Combine(root, s);
@@ -146,7 +150,8 @@ public static class PathUtil
         // is always unmodified, so we can rely on it.
         return Directory.Exists(managed)
                && File.Exists(Path.Combine(managed, "Assembly-CSharp.dll"))
-               && File.Exists(Path.Combine(managed, "UnityEngine.dll"));
+               && (File.Exists(Path.Combine(managed, "UnityEngine.dll")) ||
+                   File.Exists(Path.Combine(managed, "UnityEngine.CoreModule.dll")));
     }
 
     public static string BasePath(string managed)

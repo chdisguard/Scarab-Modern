@@ -8,7 +8,7 @@
         x:DataType="s:MainWindowViewModel"
         mc:Ignorable="d"
         Icon="/Assets/omegamaggotprime.ico"
-        Title="Scarab">
+        Title="Scarab Modern · Hollow Knight">
     <Design.DataContext>
         <s:MainWindowViewModel />
     </Design.DataContext>
