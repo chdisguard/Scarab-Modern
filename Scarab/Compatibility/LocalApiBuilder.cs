@@ -20,7 +20,9 @@ public static class LocalApiBuilder
         string log = Diagnostics.BeginBuildLog();
         string managed = settings.ManagedFolder;
         await File.AppendAllTextAsync(log, $"Managed: {managed}\nTarget: {Game}\nSource: {Source}\n");
-        string sdks = await ToolRunner.RunAsync("dotnet", new[] { "--list-sdks" }, Settings.GetOrCreateDirPath(), log, TimeSpan.FromSeconds(30));
+        string dotnet = ApiBuildSdk.ResolveExecutable(AppContext.BaseDirectory);
+        await File.AppendAllTextAsync(log, $"SDK host: {dotnet}\n");
+        string sdks = await ToolRunner.RunAsync(dotnet, new[] { "--list-sdks" }, Settings.GetOrCreateDirPath(), log, TimeSpan.FromSeconds(30));
         string sdk = ApiBuildSdk.Select(sdks);
         string game = GameBuild.Read(fs, managed);
         if (game != Game) throw new InvalidDataException($"Bundled Unity 6 API targets {Game}, not {game}.");
@@ -36,7 +38,7 @@ public static class LocalApiBuilder
         using (var archive = new ZipArchive(source)) archive.ExtractToDirectory(root);
         await File.WriteAllTextAsync(Path.Combine(root, "global.json"), ApiBuildSdk.GlobalJson(sdk));
         await File.AppendAllTextAsync(log, $"Pinned API SDK: {sdk}\n");
-        string actualSdk = await ToolRunner.RunAsync("dotnet", new[] { "--version" }, root, log, TimeSpan.FromSeconds(30));
+        string actualSdk = await ToolRunner.RunAsync(dotnet, new[] { "--version" }, root, log, TimeSpan.FromSeconds(30));
         if (!string.Equals(actualSdk.Trim(), sdk, StringComparison.Ordinal))
             throw new IOException($"Ожидался SDK {sdk}, выбран {actualSdk.Trim()}. Лог: {log}");
         string vanilla = Path.Combine(root, "Vanilla");
@@ -63,12 +65,12 @@ public static class LocalApiBuilder
         string rid = platform;
         string config = Path.Combine(root, "NuGet.Config");
         await File.WriteAllTextAsync(config, "<configuration><packageSources><clear/><add key=\"nuget.org\" value=\"https://api.nuget.org/v3/index.json\" /></packageSources></configuration>");
-        await ToolRunner.RunAsync("dotnet", new[]
+        await ToolRunner.RunAsync(dotnet, new[]
         {
             "restore", "Assembly-CSharp/Assembly-CSharp.csproj", "--configfile", config, "--runtime", rid,
             "--disable-parallel", "--verbosity", "normal"
         }, root, log, TimeSpan.FromMinutes(15));
-        await ToolRunner.RunAsync("dotnet", new[]
+        await ToolRunner.RunAsync(dotnet, new[]
         {
             "build", "Assembly-CSharp/Assembly-CSharp.csproj", "--no-restore", "--configuration", "Release",
             "--runtime", rid, "-p:CopyDir=", "-p:UseSharedCompilation=false", "-p:BuildInParallel=false", "-m:1", "--verbosity", "normal"

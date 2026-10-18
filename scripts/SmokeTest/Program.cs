@@ -5,21 +5,21 @@ using Scarab.Compatibility;
 using System.IO.Abstractions;
 using System.Security.Cryptography;
 
-if (args.Length < 2) throw new ArgumentException("Usage: SmokeTest <Managed path> <install|lifecycle|api|toggle-api> [mod name]");
-if (args[1] is not ("install" or "lifecycle" or "api" or "toggle-api")) throw new ArgumentException("Unknown operation");
+if (args.Length < 2) throw new ArgumentException("Usage: SmokeTest <Managed path> <install|lifecycle|api|force-api|toggle-api> [mod name]");
+if (args[1] is not ("install" or "lifecycle" or "api" or "force-api" or "toggle-api")) throw new ArgumentException("Unknown operation");
 var settings = new Settings { ManagedFolder = Path.GetFullPath(args[0]), Platform = Settings.GamePlatform.Windows };
 var fs = new FileSystem();
 GameProcess.EnsureClosed();
 Console.WriteLine($"Game: {GameBuild.Read(fs, settings.ManagedFolder)}");
 using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
-http.DefaultRequestHeaders.UserAgent.ParseAdd("Scarab-Modern-SmokeTest/2.8.4");
+http.DefaultRequestHeaders.UserAgent.ParseAdd("Scarab-Modern-SmokeTest/2.8.5");
 var links = await ModDatabase.FetchContent(http);
 var source = await InstalledMods.Load(fs, settings, links.Item1);
 var database = new ModDatabase(source, links);
 var installer = new Installer(settings, source, database, fs, http);
 var mod = database.Items.Single(x => x.Name == (args.Length > 2 ? args[2] : "DebugMod"));
 if (args[1] == "toggle-api") { await installer.ToggleApi(); Console.WriteLine("API toggled"); return; }
-if (args[1] == "api") { await installer.InstallApi(); Console.WriteLine("API installed"); return; }
+if (args[1] is "api" or "force-api") { await installer.InstallApi(args[1] == "force-api" ? Scarab.Interfaces.IInstaller.ReinstallPolicy.ForceReinstall : Scarab.Interfaces.IInstaller.ReinstallPolicy.SkipUpToDate); Console.WriteLine("API installed"); return; }
 await installer.Install(mod, _ => {}, true);
 Console.WriteLine($"Installed {mod.Name} {mod.Version}; enabled={mod.Enabled}");
 if (args[1] == "lifecycle")

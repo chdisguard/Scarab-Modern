@@ -23,6 +23,14 @@ public static class ToolRunner
         // Use the SDK selected by this dotnet host, not a stale environment from another MSBuild.
         start.Environment.Remove("MSBuildSDKsPath");
         start.Environment.Remove("MSBUILD_EXE_PATH");
+        if (Path.IsPathFullyQualified(executable) && Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+        {
+            string hostDirectory = Path.GetDirectoryName(executable)!;
+            start.Environment["DOTNET_ROOT"] = hostDirectory;
+            start.Environment["DOTNET_ROOT_X64"] = hostDirectory;
+            start.Environment["DOTNET_HOST_PATH"] = executable;
+            start.Environment["PATH"] = hostDirectory + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
+        }
         using var writer = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite), new UTF8Encoding(false)) { AutoFlush = true };
         writer.WriteLine($"\n[{DateTimeOffset.Now:O}] {executable} {string.Join(" ", args)}");
         var tail = new Queue<string>();

@@ -357,3 +357,11 @@ healthchecksdb
 /vendor/api/Vanilla/
 /vendor/api/OutputFinal/
 **/Output/
+
+# Local development history and verification reports
+/README.upstream.md
+/CHANGELOG-modern.md
+/VALIDATION.json
+/docs/VALIDATION.md
+/docs/debug-main-menu.png
+/docs/debug-working.png

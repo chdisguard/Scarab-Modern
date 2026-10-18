@@ -7,6 +7,27 @@ namespace Scarab.Tests;
 
 public class ApiBuildSdkTests
 {
+    [Fact]
+    public void PortableSdkIsPreferredWithoutRequiringDotnetOnPath()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "scarab-sdk-" + System.Guid.NewGuid().ToString("N"));
+        string host = Path.Combine(root, "tools", "dotnet", System.OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
+        try
+        {
+            Assert.Equal("dotnet", ApiBuildSdk.ResolveExecutable(root));
+            Directory.CreateDirectory(Path.GetDirectoryName(host)!);
+            File.WriteAllBytes(host, System.Array.Empty<byte>());
+            Assert.Equal(host, ApiBuildSdk.ResolveExecutable(root));
+        }
+        finally
+        {
+            if (File.Exists(host)) File.Delete(host);
+            if (Directory.Exists(Path.GetDirectoryName(host))) Directory.Delete(Path.GetDirectoryName(host)!);
+            if (Directory.Exists(Path.Combine(root, "tools"))) Directory.Delete(Path.Combine(root, "tools"));
+            if (Directory.Exists(root)) Directory.Delete(root);
+        }
+    }
+
     [Theory]
     [InlineData("10.0.401 [C:/dotnet/sdk]\n8.0.419 [C:/dotnet/sdk]\n8.0.99 [C:/dotnet/sdk]", "8.0.419")]
     [InlineData("8.0.500-preview.1 [/dotnet/sdk]\r\n8.0.408 [/dotnet/sdk]", "8.0.408")]

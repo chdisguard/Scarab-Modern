@@ -94,7 +94,7 @@ public partial class ModPageViewModel : ViewModelBase
             {
                 string game = Compatibility.GameBuild.Read(new System.IO.Abstractions.FileSystem(), _settings.ManagedFolder);
                 return game == Compatibility.LocalApiBuilder.Game
-                    ? $"Hollow Knight {game} · API v78 (Unity 6, experimental). First install builds locally; .NET SDK 8.0 required."
+                    ? $"Hollow Knight {game} · Modding API v78 (Unity 6)"
                     : $"Hollow Knight {game} · official API channel";
             }
             catch (Exception e) when (e is System.IO.IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException) { return e.Message; }

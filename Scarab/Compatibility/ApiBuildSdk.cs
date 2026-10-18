@@ -6,6 +6,13 @@ namespace Scarab.Compatibility;
 /// <summary>Keep local API builds on the supported stable .NET 8 toolchain.</summary>
 public static class ApiBuildSdk
 {
+    // Releases carry an official portable SDK; source builds can use the system SDK.
+    public static string ResolveExecutable(string baseDirectory)
+    {
+        string bundled = Path.Combine(baseDirectory, "tools", "dotnet", OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
+        return File.Exists(bundled) ? bundled : "dotnet";
+    }
+
     public static string Select(string installed)
     {
         var versions = Regex.Matches(installed, @"(?m)^\s*(8\.0\.\d+)\s+\[")
